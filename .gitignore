@@ -1,2 +1,4 @@
 result_sample
 add_half.result
+script/*.scr
+*~

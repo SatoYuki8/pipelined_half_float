@@ -131,86 +131,83 @@ circuit add_half{
     /*start*/
     sel wdiff<6>;
 
-    sel exp_diff<5>;
-    sel Aa<16>, Bb<16>;
-
-    /*pre-shift for adder operation*/
+    /*pre-shift for adder operation (Stage A)*/
     sel xmsb<3>, ymsb<3>;
 
-    sel Bm1<16>, Bm2<16>, Bs1, Bs2, Bexp<5>;    
+    reg_wr exp_diff<5>;
+    reg_wr Aa<16>, Bb<16>;
 
-    /*mantissa addition*/
-/*  sel s1, s2, x1<16>, x2<16>, r1<16>;
-    instrself madd;
-    instr_arg madd(s1, s2, x1, x2);
-    instruct madd r1 = (16#s1 @ x1) + s1 + (16#s2 @ x2) + s1;
-*/    
+    /*mantissa addition (Stage B)*/
     sel m3<16>;
-    
-    sel Cm<16>, Cs, Cexp<5>;    
 
-    /*leading zero shift*/
-    sel z<16>;
+    reg_wr Bm1<16>, Bm2<16>, Bs1, Bs2, Bexp<5>;    
 
-    /*return resurt*/
-    
+    /*leading zero shift (Stage C)*/    
+    reg_wr Cm<16>, Cs, Cexp<5>;    
+
+    /*return resurt (Stage D)*/
+    reg_wr z<16>;
+
+    stage_name A {task pshft(exp_diff, Aa, Bb);}
+    stage_name B {task manadd(Bm1, Bm2, Bs1, Bs2, Bexp);}
+    stage_name C {task lzshft(Cm, Cs, Cexp);}
+    stage_name D {task resret(z);}
+
     /***************************************************************/
     instruct do par{
 	/*start*/
 	wdiff = (0b0||a<14:10>) + (^(0b0||b<14:10>) + 0b1);
 	alt{
-	    (wdiff<5>): par{
-		exp_diff = ^wdiff<4:0> + 0b1;
-		Aa = b; Bb = a;
-	    }
-	    else: par{
-		exp_diff = wdiff<4:0>;
-		Aa = a; Bb = b;
-	    }
+	    (wdiff<5>): generate A.pshft(^wdiff<4:0> + 0b1, b, a);
+	    else: generate A.pshft(wdiff<4:0>, a, b);
 	}
+
+    }
 
 	/*pre-shift for adder operation*/
-	alt{
-	    (Aa<14:10> == 0b00000): xmsb = 0b000;
-	    else: xmsb = 0b001;
-	}
+    stage A{
+	par{
+	    alt{
+		(Aa<14:10> == 0b00000): xmsb = 0b000;
+		else: xmsb = 0b001;
+	    }
+	    
+	    alt{
+		(Bb<14:10> == 0b00000): ymsb = 0b000;
+		else: ymsb = 0b001;
+	    }
 
-	alt{
-	    (Bb<14:10> == 0b00000): ymsb = 0b000;
-	    else: ymsb = 0b001;
+	    relay B.manadd(xmsb || Aa<9:0> || 0b000, bshift.do((ymsb || Bb<9:0> || 0b000), exp_diff).f,
+			   Aa<15>, Bb<15>, Aa<14:10>);	  
 	}
-
-	Bm1 = xmsb || Aa<9:0> || 0b000;
-	Bm2 = bshift.do((ymsb || Bb<9:0> || 0b000), exp_diff).f;
-	Bs1 = Aa<15>;
-	Bs2 = Bb<15>;
-	Bexp = Aa<14:10>;
+    }
 
 	/*mantissa addition*/
-	m3 = madd.do(Bs1, Bs2, Bm1, Bm2).r1;
-	
-	alt{
-	    (m3<15>): par{
-		Cm = ^m3+0b1;
-		Cs = m3<15>;
-		Cexp = Bexp;
-	    }
-	    else: par{
-		Cm = m3;
-		Cs = m3<15>;
-		Cexp = Bexp;		
+    stage B{
+	par{
+	    m3 = madd.do(Bs1, Bs2, Bm1, Bm2).r1;
+	    
+	    alt{
+		(m3<15>): relay C.lzshft(^m3+0b1, m3<15>, Bexp);		
+		else: relay C.lzshft(m3, m3<15>, Bexp);
+		
 	    }
 	}
+    }
 
 	/*leading zero shift*/
-	alt{
-	    (Cm == 0x0000): z = 0x0000;
-	    (Cexp == 0b00000): z = Cs || Cexp || Cm<12:3>;
-	    else: z = Cs || ((Cexp + ^(lzshift.amount) + 0b1) + 0b1) ||
-		      lzshift.do(Cm<14:0>||0b0).f<14:5>;
+    stage C{
+	par{
+	    alt{
+		(Cm == 0x0000): relay D.resret(0x0000);
+		(Cexp == 0b00000): relay D.resret(Cs || Cexp || Cm<12:3>);
+		else: relay D.resret(Cs || ((Cexp + ^(lzshift.amount) + 0b1) + 0b1) ||
+				     lzshift.do(Cm<14:0>||0b0).f<14:5>);
+	    }
 	}
-
+    }
 	/*return resurt*/
+    stage D{
 	result = z;
 	/*done(z);*/
     }
