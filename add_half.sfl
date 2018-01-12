@@ -1,0 +1,218 @@
+/*16bit floating adder*/
+/*************************************
+  Half-precision floating-point format
+    _______________________________
+   | | | | | | | | | | | | | | | | |  (16 bit)
+   |5|4|3|2|1|a|9|8|7|6|5|4|3|2|1|0|  
+   |_|_|_|_|_|_|_|_|_|_|_|_|_|_|_|_|
+    | |_______| |_________________|
+    |   exponent      fraction(10bit: precision=11bit)
+  sign  (5bit)  
+ (1bit)
+
+**************************************/
+
+/********************* sub modules *****************************/
+
+/* shifter */
+declare BarrelShift{
+    input a<16>;
+    input amount<5>;
+    output f<16>;
+    instrin do;
+    instr_arg do(a, amount);
+}
+circuit BarrelShift{
+    input a<16>;
+    input amount<5>;
+    output f<16>;
+    instrin do;
+    
+    sel t0<16>, t1<16>, t2<16>, t3<16>, t4<16>;
+
+    instruct do par{
+	alt{
+	    (amount<0>): t0 = a >> 0b1;
+	    else: t0 = a;
+	}
+	alt{
+	    (amount<1>): t1 = t0 >> 0b10;
+	    else: t1 = t0;
+	}
+	alt{
+	    (amount<2>): t2 = t1 >> 0b100;
+	    else: t2 = t1;
+	}
+	alt{
+	    (amount<3>): t3 = t2 >> 0b1000;
+	    else: t3 = t2;
+	}
+	alt{
+	    (amount<4>): t4 = t3 >> 0b10000;
+	    else: t4 = t3;
+	}
+	
+	f = t4;
+    }
+}
+
+/* leading zero shifter */
+declare LeadingZeroShift{
+    input a<16>;
+    output amount<5>;
+    output f<16>;
+    instrin do;
+    instr_arg do(a);
+}
+circuit LeadingZeroShift{
+    input a<16>;
+    output amount<5>;
+    output f<16>;
+    instrin do;
+
+    sel t0<16>, t1<16>, t2<16>, t3<16>;
+    sel a1, a2, a3, a4;
+
+    instruct do par{
+	alt{
+	    (a<15:8> == 0b00000000): par{ a4 = 0b1; t0 = a<<0b1000; }
+	    else: par{ a4 = 0b0; t0 = a; }
+	}
+	alt{
+	    (t0<15:12> == 0b0000): par{ a3 = 0b1; t1 = t0<<0b100; }
+	    else: par{ a3 = 0b0; t1 = t0; }
+	}
+	alt{
+	    (t1<15:14> == 0b00): par{ a2 = 0b1; t2 = t1<<0b10; }
+	    else: par{ a2 = 0b0; t2 = t1; }
+	}
+	alt{
+	    (t2<15> == 0b0): par{ a1 = 0b1; t3 = t2<<0b1; }
+	    else: par{ a1 = 0b0; t3 = t2; }
+	}
+
+	amount = (0b0||a4||a3||a2||a1);
+	f = t3;
+    }
+}    
+
+/* mantissa adder */
+declare MantissaAdder{
+    input s1, s2;
+    input x1<16>, x2<16>;
+    output r1<16>;
+    instrin do;
+
+    instr_arg do(s1, s2, x1, x2);
+}
+
+circuit MantissaAdder{
+    input s1, s2;
+    input x1<16>, x2<16>;
+    output r1<16>;
+    instrin do;
+
+    instruct do par{
+	r1 = (16#s1 @ x1) + s1 + (16#s2 @ x2) + s2;
+    }
+}
+
+/************************* main module *******************************/
+circuit add_half{
+    input a<16>, b<16>;
+    output result<16>;
+    instrin do;
+/*    instrout done;       */
+
+    BarrelShift bshift;
+    LeadingZeroShift lzshift;
+    MantissaAdder madd;
+
+    /*start*/
+    sel wdiff<6>;
+
+    sel exp_diff<5>;
+    sel Aa<16>, Bb<16>;
+
+    /*pre-shift for adder operation*/
+    sel xmsb<3>, ymsb<3>;
+
+    sel Bm1<16>, Bm2<16>, Bs1, Bs2, Bexp<5>;    
+
+    /*mantissa addition*/
+/*  sel s1, s2, x1<16>, x2<16>, r1<16>;
+    instrself madd;
+    instr_arg madd(s1, s2, x1, x2);
+    instruct madd r1 = (16#s1 @ x1) + s1 + (16#s2 @ x2) + s1;
+*/    
+    sel m3<16>;
+    
+    sel Cm<16>, Cs, Cexp<5>;    
+
+    /*leading zero shift*/
+    sel z<16>;
+
+    /*return resurt*/
+    
+    /***************************************************************/
+    instruct do par{
+	/*start*/
+	wdiff = (0b0||a<14:10>) + (^(0b0||b<14:10>) + 0b1);
+	alt{
+	    (wdiff<5>): par{
+		exp_diff = ^wdiff<4:0> + 0b1;
+		Aa = b; Bb = a;
+	    }
+	    else: par{
+		exp_diff = wdiff<4:0>;
+		Aa = a; Bb = b;
+	    }
+	}
+
+	/*pre-shift for adder operation*/
+	alt{
+	    (Aa<14:10> == 0b00000): xmsb = 0b000;
+	    else: xmsb = 0b001;
+	}
+
+	alt{
+	    (Bb<14:10> == 0b00000): ymsb = 0b000;
+	    else: ymsb = 0b001;
+	}
+
+	Bm1 = xmsb || Aa<9:0> || 0b000;
+	Bm2 = bshift.do((ymsb || Bb<9:0> || 0b000), exp_diff).f;
+	Bs1 = Aa<15>;
+	Bs2 = Bb<15>;
+	Bexp = Aa<14:10>;
+
+	/*mantissa addition*/
+	m3 = madd.do(Bs1, Bs2, Bm1, Bm2).r1;
+	
+	alt{
+	    (m3<15>): par{
+		Cm = ^m3+0b1;
+		Cs = m3<15>;
+		Cexp = Bexp;
+	    }
+	    else: par{
+		Cm = m3;
+		Cs = m3<15>;
+		Cexp = Bexp;		
+	    }
+	}
+
+	/*leading zero shift*/
+	alt{
+	    (Cm == 0x0000): z = 0x0000;
+	    (Cexp == 0b00000): z = Cs || Cexp || Cm<12:3>;
+	    else: z = Cs || ((Cexp + ^(lzshift.amount) + 0b1) + 0b1) ||
+		      lzshift.do(Cm<14:0>||0b0).f<14:5>;
+	}
+
+	/*return resurt*/
+	result = z;
+	/*done(z);*/
+    }
+}
+/*End of File.*/
